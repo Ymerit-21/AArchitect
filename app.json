@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Architec",
-    "slug": "Architec",
+    "name": "Architect",
+    "slug": "architect",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -10,10 +10,11 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#e8e5de"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.architec.app"
     },
     "android": {
       "adaptiveIcon": {
@@ -24,6 +25,22 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Architect needs photo access to upload your Ghana Card and profile photo."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Architect needs your location to find nearby experts."
+        }
+      ]
+    ]
   }
 }
