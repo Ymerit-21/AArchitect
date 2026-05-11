@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { collection, addDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { useUserData } from '../context/UserDataContext';
 
 const CRIMSON = '#8B0000';
 const PALE    = 'rgba(139,0,0,0.08)';
@@ -214,6 +215,7 @@ function SuccessModal({ visible, amount, category, date, onDone }) {
 export default function LogExpenseScreen({ navigation }) {
   const insets       = useSafeAreaInsets();
   const { user }     = useAuth();
+  const { goals }    = useUserData();
   const amtRef       = useRef(null);
   const scrollRef    = useRef(null);
 
@@ -225,6 +227,11 @@ export default function LogExpenseScreen({ navigation }) {
   const [note,     setNote]     = useState('');
   const [saving,   setSaving]   = useState(false);
   const [success,  setSuccess]  = useState(false);
+
+  const catObj       = CATS.find(c => c.id === cat);
+  const matchingBudget = cat
+    ? (goals ?? []).find(g => g.type === 'budget' && g.category === catObj?.label)
+    : null;
 
   const pickCat = (id) => {
     setCat(id);
@@ -240,11 +247,10 @@ export default function LogExpenseScreen({ navigation }) {
 
     setSaving(true);
     try {
-      const catObj = CATS.find(c => c.id === cat);
       await addDoc(collection(db, 'users', user.uid, 'transactions'), {
         title:       desc || (catObj ? catObj.label : 'Expense'),
         description: desc,
-        category:    cat,
+        category:    catObj?.label ?? cat,
         amount:      -Math.abs(parseFloat(amount)),
         paidBy,
         note,
@@ -347,6 +353,13 @@ export default function LogExpenseScreen({ navigation }) {
                   </TouchableOpacity>
                 ))}
               </View>
+
+              {matchingBudget && (
+                <View style={st.budgetPill}>
+                  <Ionicons name="bar-chart-outline" size={13} color="#3b82f6" />
+                  <Text style={st.budgetPillTxt}>Counts toward "{matchingBudget.title}"</Text>
+                </View>
+              )}
             </View>
 
             {/* Description */}
@@ -512,6 +525,10 @@ const st = StyleSheet.create({
   sheetTitle: { color: '#111110', fontSize: 16, fontWeight: '700', marginBottom: 14 },
   sheetRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 15, borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
   sheetRowTxt:{ color: '#374151', fontSize: 15 },
+
+  // Budget pill
+  budgetPill:    { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#eff6ff', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginTop: 12, borderWidth: 1, borderColor: '#bfdbfe' },
+  budgetPillTxt: { color: '#2563eb', fontSize: 12, fontWeight: '600', flex: 1 },
 
   // Save button
   saveBtn: { backgroundColor: CRIMSON, borderRadius: 16, height: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 6, marginBottom: 8 },

@@ -6,11 +6,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { signOut } from 'firebase/auth';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { useUserData } from '../context/UserDataContext';
 import BottomNav from '../components/BottomNav';
+import RatingModal from './RatingScreen';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -109,7 +110,9 @@ export default function HomeScreen({ navigation }) {
   const { user }                         = useAuth();
   const { profile, goals, transactions, unreadCount } = useUserData();
   const insets                           = useSafeAreaInsets();
-  const [experts, setExperts]            = useState([]);
+  const [experts,        setExperts]        = useState([]);
+  const [isExpert,       setIsExpert]       = useState(false);
+  const [pendingRateJob, setPendingRateJob] = useState(null);
 
   const firstName = profile?.displayName?.split(' ')[0]
     ?? user?.displayName?.split(' ')[0]
@@ -160,6 +163,38 @@ export default function HomeScreen({ navigation }) {
     });
     return unsub;
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    // Query by uid field (works regardless of document ID format)
+    const q = query(collection(db, 'experts'), where('uid', '==', user.uid));
+    const unsub = onSnapshot(q, snap => {
+      setIsExpert(!snap.empty);
+    }, () => {
+      // Fallback: try document ID lookup
+      onSnapshot(doc(db, 'experts', user.uid), s => setIsExpert(s.exists()), () => {});
+    });
+    return unsub;
+  }, [user]);
+
+  // Listen for completed jobs that need a rating
+  useEffect(() => {
+    if (!user) return;
+    const q = query(
+      collection(db, 'jobs'),
+      where('clientId', '==', user.uid),
+      where('status', '==', 'completed'),
+    );
+    const unsub = onSnapshot(q, snap => {
+      const ratedIds   = new Set(profile?.ratedJobIds ?? []);
+      const skippedIds = new Set(profile?.skippedRatingJobIds ?? []);
+      const pending = snap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .find(j => !ratedIds.has(j.id) && !skippedIds.has(j.id) && !j.hasRated && !j.ratingSkipped);
+      setPendingRateJob(pending ?? null);
+    }, () => {});
+    return unsub;
+  }, [user, profile?.ratedJobIds, profile?.skippedRatingJobIds]);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -232,10 +267,12 @@ export default function HomeScreen({ navigation }) {
         {/* ── Quick Actions ───────────────────────────────────────────── */}
         <Animated.View style={[styles.quickRow, quickAnim]}>
           {[
-            { icon: 'desktop-outline',   label: 'Log expense', route: 'LogExpense' },
-            { icon: 'people-outline',    label: 'Experts',     route: 'BecomeExpert' },
-            { icon: 'briefcase-outline', label: 'My jobs',     route: 'Jobs' },
-          ].map((item, i) => (
+            { icon: 'desktop-outline',   label: 'Log expense',  route: 'LogExpense'   },
+            isExpert
+              ? { icon: 'storefront-outline', label: 'Marketplace', route: 'Marketplace' }
+              : { icon: 'people-outline',     label: 'Experts',     route: 'BecomeExpert' },
+            { icon: 'briefcase-outline', label: 'My jobs',      route: 'Jobs'         },
+          ].map((item) => (
             <PressCard key={item.label} style={styles.quickCard} onPress={() => item.route && navigation.navigate(item.route)}>
               <View style={styles.quickIcon}>
                 <Ionicons name={item.icon} size={22} color="#c96b5a" />
@@ -296,19 +333,30 @@ export default function HomeScreen({ navigation }) {
         <Animated.View style={marketAnim}>
           <View style={[styles.rowBetween, { marginTop: 24, marginBottom: 12 }]}>
             <Text style={styles.sectionTitle}>Marketplace</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('BecomeExpert')}>
-              <Text style={styles.viewAll}>+ Join</Text>
-            </TouchableOpacity>
+            {!isExpert && (
+              <TouchableOpacity onPress={() => navigation.navigate('BecomeExpert')}>
+                <Text style={styles.viewAll}>+ Join</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {experts.length === 0 ? (
             <View style={styles.emptyMarket}>
               <Ionicons name="people-outline" size={36} color="#d1d5db" />
-              <Text style={styles.emptyTitle}>No experts yet</Text>
-              <Text style={styles.emptyBody}>Be the first to offer your services on Architect.</Text>
-              <PressCard style={styles.emptyBtn} onPress={() => navigation.navigate('BecomeExpert')}>
-                <Text style={styles.emptyBtnText}>Become an Expert</Text>
-              </PressCard>
+              {isExpert ? (
+                <>
+                  <Text style={styles.emptyTitle}>You're listed!</Text>
+                  <Text style={styles.emptyBody}>No other experts in your area yet. Clients can still find and hire you.</Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.emptyTitle}>No experts yet</Text>
+                  <Text style={styles.emptyBody}>Be the first to offer your services on Architect.</Text>
+                  <PressCard style={styles.emptyBtn} onPress={() => navigation.navigate('BecomeExpert')}>
+                    <Text style={styles.emptyBtnText}>Become an Expert</Text>
+                  </PressCard>
+                </>
+              )}
             </View>
           ) : (
             <ScrollView
@@ -402,6 +450,12 @@ export default function HomeScreen({ navigation }) {
 
       {/* ── Bottom Nav ──────────────────────────────────────────────────── */}
       <BottomNav activeTab="home" navigation={navigation} bottomInset={insets.bottom || 10} />
+
+      <RatingModal
+        visible={!!pendingRateJob}
+        job={pendingRateJob}
+        onClose={() => setPendingRateJob(null)}
+      />
     </View>
   );
 }

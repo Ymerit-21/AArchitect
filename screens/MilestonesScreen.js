@@ -9,7 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import {
   collection, addDoc, updateDoc, deleteDoc,
-  doc, serverTimestamp, Timestamp,
+  doc, serverTimestamp, Timestamp, increment,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
@@ -55,8 +55,161 @@ function useEntrance(delay = 0) {
   return { opacity, transform: [{ translateY }] };
 }
 
+// ── Milestone Detail Sheet ─────────────────────────────────────────────────────
+function MilestoneDetailSheet({ visible, goal, onClose, onAdd }) {
+  const sheetY   = useRef(new Animated.Value(600)).current;
+  const overlay  = useRef(new Animated.Value(0)).current;
+  const fillAnim = useRef(new Animated.Value(0)).current;
+
+  const pct      = goal ? (goal.targetAmount > 0 ? Math.min((goal.currentAmount ?? 0) / goal.targetAmount, 1) : 0) : 0;
+  const done     = pct >= 1;
+  const lockInfo = goal ? getLockInfo(goal.lockUntil) : { locked: false, label: 'No lock' };
+
+  useEffect(() => {
+    if (visible) {
+      Animated.parallel([
+        Animated.timing(overlay, { toValue: 1, duration: 220, useNativeDriver: true }),
+        Animated.spring(sheetY,  { toValue: 0, tension: 65, friction: 11, useNativeDriver: true }),
+      ]).start();
+      Animated.spring(fillAnim, { toValue: pct, useNativeDriver: false, tension: 55, friction: 10, delay: 250 }).start();
+    } else {
+      fillAnim.setValue(0);
+      Animated.parallel([
+        Animated.timing(overlay, { toValue: 0, duration: 180, useNativeDriver: true }),
+        Animated.timing(sheetY,  { toValue: 600, duration: 200, useNativeDriver: true }),
+      ]).start();
+    }
+  }, [visible]);
+
+  if (!goal) return null;
+
+  const barColor  = done ? GREEN : RED;
+  const remaining = (goal.targetAmount ?? 0) - (goal.currentAmount ?? 0);
+
+  return (
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
+      <Animated.View style={[sh.overlay, { opacity: overlay }]}>
+        <Pressable style={{ flex: 1 }} onPress={onClose} />
+        <Animated.View style={[dt.sheet, { transform: [{ translateY: sheetY }] }]}>
+          <View style={sh.handle} />
+
+          {/* Header */}
+          <View style={dt.headRow}>
+            <View style={[dt.iconWrap, { backgroundColor: done ? '#dcfce7' : '#fef2f2' }]}>
+              <Ionicons name={done ? 'checkmark-circle' : 'flag'} size={22} color={done ? GREEN : RED} />
+            </View>
+            <Text style={dt.title} numberOfLines={1}>{goal.title}</Text>
+            <TouchableOpacity onPress={onClose} style={dt.closeBtn}>
+              <Ionicons name="close" size={18} color="#9ca3af" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Progress section */}
+          <View style={dt.progressSection}>
+            <View style={dt.amtRow}>
+              <View>
+                <Text style={dt.amtLabel}>Saved</Text>
+                <Text style={[dt.amtVal, { color: barColor }]}>{fmt(goal.currentAmount ?? 0)}</Text>
+              </View>
+              <View style={dt.pctBadge}>
+                <Text style={[dt.pctTxt, { color: barColor }]}>{Math.round(pct * 100)}%</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={dt.amtLabel}>Target</Text>
+                <Text style={dt.amtVal}>{fmt(goal.targetAmount)}</Text>
+              </View>
+            </View>
+            <View style={dt.track}>
+              <Animated.View style={[dt.fill, {
+                width: fillAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }),
+                backgroundColor: barColor,
+              }]} />
+            </View>
+            {!done && (
+              <Text style={dt.remainingTxt}>{fmt(remaining)} remaining to reach goal</Text>
+            )}
+          </View>
+
+          {/* Info rows */}
+          <View style={dt.infoSection}>
+            <View style={dt.infoRow}>
+              <View style={dt.infoIcon}>
+                <Ionicons name={lockInfo.locked ? 'lock-closed' : 'lock-open-outline'} size={16} color={lockInfo.locked ? '#d97706' : '#9ca3af'} />
+              </View>
+              <Text style={dt.infoLabel}>Lock Status</Text>
+              <Text style={[dt.infoVal, { color: lockInfo.locked ? '#d97706' : '#6b7280' }]}>{lockInfo.label}</Text>
+            </View>
+
+            {lockInfo.locked && lockInfo.date && (
+              <View style={dt.infoRow}>
+                <View style={dt.infoIcon}>
+                  <Ionicons name="calendar-outline" size={16} color="#9ca3af" />
+                </View>
+                <Text style={dt.infoLabel}>Unlocks On</Text>
+                <Text style={dt.infoVal}>
+                  {lockInfo.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                </Text>
+              </View>
+            )}
+
+            <View style={[dt.infoRow, { borderBottomWidth: 0 }]}>
+              <View style={dt.infoIcon}>
+                <Ionicons name="repeat" size={16} color={goal.autoDeductEnabled ? '#7c3aed' : '#9ca3af'} />
+              </View>
+              <Text style={dt.infoLabel}>Auto-save</Text>
+              <Text style={[dt.infoVal, { color: goal.autoDeductEnabled ? '#7c3aed' : '#6b7280' }]}>
+                {goal.autoDeductEnabled && (goal.autoDeduct ?? 0) > 0
+                  ? `¢${goal.autoDeduct} per deposit`
+                  : 'Not enabled'}
+              </Text>
+            </View>
+          </View>
+
+          {/* Add Funds CTA */}
+          {!lockInfo.locked && !done && (
+            <TouchableOpacity
+              style={dt.addBtn}
+              onPress={() => { onClose(); setTimeout(() => onAdd(goal), 260); }}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="add-circle-outline" size={20} color="#ffffff" />
+              <Text style={dt.addBtnTxt}>Add Funds</Text>
+            </TouchableOpacity>
+          )}
+
+          <View style={{ height: 24 }} />
+        </Animated.View>
+      </Animated.View>
+    </Modal>
+  );
+}
+
+const dt = StyleSheet.create({
+  sheet:          { backgroundColor: '#ffffff', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 24, paddingTop: 14 },
+  headRow:        { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 22 },
+  iconWrap:       { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  title:          { flex: 1, color: DARK, fontSize: 20, fontWeight: '800' },
+  closeBtn:       { width: 36, height: 36, borderRadius: 18, backgroundColor: '#f3f4f6', alignItems: 'center', justifyContent: 'center' },
+  progressSection:{ backgroundColor: '#f9fafb', borderRadius: 20, padding: 20, marginBottom: 14 },
+  amtRow:         { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  amtLabel:       { color: '#9ca3af', fontSize: 12, fontWeight: '500', marginBottom: 4 },
+  amtVal:         { color: DARK, fontSize: 18, fontWeight: '800' },
+  pctBadge:       { backgroundColor: '#ffffff', borderRadius: 50, paddingHorizontal: 14, paddingVertical: 8, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 6, elevation: 2 },
+  pctTxt:         { fontSize: 20, fontWeight: '800' },
+  track:          { height: 10, backgroundColor: '#e5e7eb', borderRadius: 5, overflow: 'hidden', marginBottom: 10 },
+  fill:           { height: 10, borderRadius: 5 },
+  remainingTxt:   { color: '#9ca3af', fontSize: 12, textAlign: 'center', marginTop: 2 },
+  infoSection:    { backgroundColor: '#f9fafb', borderRadius: 20, overflow: 'hidden', marginBottom: 18 },
+  infoRow:        { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#eeeeee' },
+  infoIcon:       { width: 32, height: 32, borderRadius: 16, backgroundColor: '#ffffff', alignItems: 'center', justifyContent: 'center' },
+  infoLabel:      { flex: 1, color: '#374151', fontSize: 14, fontWeight: '500' },
+  infoVal:        { color: '#6b7280', fontSize: 14, fontWeight: '600' },
+  addBtn:         { backgroundColor: RED, borderRadius: 16, height: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  addBtnTxt:      { color: '#ffffff', fontSize: 16, fontWeight: '700' },
+});
+
 // ── Milestone card ─────────────────────────────────────────────────────────────
-function MilestoneCard({ goal, onAdd, onDelete }) {
+function MilestoneCard({ goal, onAdd, onDelete, onOpen }) {
   const pct      = goal.targetAmount > 0 ? Math.min((goal.currentAmount ?? 0) / goal.targetAmount, 1) : 0;
   const done     = pct >= 1;
   const lockInfo = getLockInfo(goal.lockUntil);
@@ -69,7 +222,7 @@ function MilestoneCard({ goal, onAdd, onDelete }) {
   const barColor = done ? GREEN : RED;
 
   return (
-    <View style={mc.card}>
+    <TouchableOpacity style={[mc.card, done && mc.cardDone]} onPress={() => onOpen?.(goal)} activeOpacity={0.85}>
       {/* Top row */}
       <View style={mc.topRow}>
         <View style={[mc.iconWrap, { backgroundColor: done ? '#dcfce7' : '#fef2f2' }]}>
@@ -127,11 +280,11 @@ function MilestoneCard({ goal, onAdd, onDelete }) {
         {done && (
           <View style={[mc.badge, { backgroundColor: '#dcfce7' }]}>
             <Ionicons name="checkmark-circle" size={11} color={GREEN} />
-            <Text style={[mc.badgeTxt, { color: GREEN }]}>Complete</Text>
+            <Text style={[mc.badgeTxt, { color: GREEN }]}>Completed ✓</Text>
           </View>
         )}
 
-        <Text style={mc.pct}>{Math.round(pct * 100)}%</Text>
+        {!done && <Text style={mc.pct}>{Math.round(pct * 100)}%</Text>}
       </View>
 
       {/* Lock expiry date */}
@@ -140,12 +293,13 @@ function MilestoneCard({ goal, onAdd, onDelete }) {
           Locked until {lockInfo.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
         </Text>
       )}
-    </View>
+    </TouchableOpacity>
   );
 }
 
 const mc = StyleSheet.create({
-  card:    { backgroundColor: '#ffffff', borderRadius: 20, padding: 16, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 1 },
+  card:    { backgroundColor: '#ffffff', borderRadius: 20, padding: 16, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 1, borderWidth: 1, borderColor: 'transparent' },
+  cardDone:{ backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' },
   topRow:  { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
   iconWrap:{ width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   title:   { color: DARK, fontSize: 15, fontWeight: '700', marginBottom: 2 },
@@ -166,6 +320,7 @@ function AddFundsSheet({ visible, goal, onClose, onConfirm, saving }) {
   const sheetY  = useRef(new Animated.Value(400)).current;
   const overlay = useRef(new Animated.Value(0)).current;
   const [amount, setAmount] = useState('');
+  const { profile } = useUserData();
 
   useEffect(() => {
     if (visible) {
@@ -184,6 +339,7 @@ function AddFundsSheet({ visible, goal, onClose, onConfirm, saving }) {
 
   if (!goal) return null;
   const remaining = (goal.targetAmount ?? 0) - (goal.currentAmount ?? 0);
+  const walletBalance = profile?.balance ?? 0;
 
   return (
     <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
@@ -193,7 +349,13 @@ function AddFundsSheet({ visible, goal, onClose, onConfirm, saving }) {
           <Animated.View style={[sh.sheet, { transform: [{ translateY: sheetY }] }]}>
             <View style={sh.handle} />
             <Text style={sh.title}>Add to "{goal.title}"</Text>
-            <Text style={sh.sub}>¢{remaining.toFixed(2)} remaining to reach goal</Text>
+            <View style={sh.subRow}>
+              <Text style={sh.sub}>¢{remaining.toFixed(2)} remaining</Text>
+              <View style={sh.balancePill}>
+                <Ionicons name="wallet-outline" size={12} color="#6366f1" />
+                <Text style={sh.balanceTxt}>Wallet: {fmt(walletBalance)}</Text>
+              </View>
+            </View>
 
             <View style={sh.inputWrap}>
               <Text style={sh.cedi}>¢</Text>
@@ -236,11 +398,14 @@ function AddFundsSheet({ visible, goal, onClose, onConfirm, saving }) {
 }
 
 const sh = StyleSheet.create({
-  overlay:    { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
-  sheet:      { backgroundColor: '#ffffff', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 24, paddingTop: 14 },
-  handle:     { width: 40, height: 4, borderRadius: 2, backgroundColor: '#e5e7eb', alignSelf: 'center', marginBottom: 22 },
-  title:      { color: DARK, fontSize: 20, fontWeight: '800', marginBottom: 4 },
-  sub:        { color: '#9ca3af', fontSize: 14, marginBottom: 24 },
+  overlay:     { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  sheet:       { backgroundColor: '#ffffff', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 24, paddingTop: 14 },
+  handle:      { width: 40, height: 4, borderRadius: 2, backgroundColor: '#e5e7eb', alignSelf: 'center', marginBottom: 22 },
+  title:       { color: DARK, fontSize: 20, fontWeight: '800', marginBottom: 8 },
+  subRow:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 },
+  sub:         { color: '#9ca3af', fontSize: 14 },
+  balancePill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#eef2ff', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 5 },
+  balanceTxt:  { color: '#6366f1', fontSize: 12, fontWeight: '700' },
   inputWrap:  { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f9fafb', borderRadius: 16, paddingHorizontal: 20, paddingVertical: 16, marginBottom: 16, borderWidth: 1.5, borderColor: '#e5e7eb' },
   cedi:       { color: RED, fontSize: 28, fontWeight: '800', marginRight: 6 },
   input:      { flex: 1, fontSize: 32, fontWeight: '800', color: DARK, padding: 0 },
@@ -470,15 +635,64 @@ const cr = StyleSheet.create({
   saveTxt:    { color: '#ffffff', fontSize: 16, fontWeight: '700' },
 });
 
+// ── Completion Toast ───────────────────────────────────────────────────────────
+function CompletionToast({ message, onHide }) {
+  const translateY = useRef(new Animated.Value(120)).current;
+  const opacity    = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!message) return;
+    translateY.setValue(120);
+    opacity.setValue(0);
+    Animated.parallel([
+      Animated.spring(translateY, { toValue: 0, tension: 65, friction: 11, useNativeDriver: true }),
+      Animated.timing(opacity,    { toValue: 1, duration: 200, useNativeDriver: true }),
+    ]).start();
+
+    const timer = setTimeout(() => {
+      Animated.parallel([
+        Animated.timing(translateY, { toValue: 120, duration: 300, useNativeDriver: true }),
+        Animated.timing(opacity,    { toValue: 0, duration: 300, useNativeDriver: true }),
+      ]).start(() => onHide());
+    }, 3800);
+    return () => clearTimeout(timer);
+  }, [message]);
+
+  if (!message) return null;
+
+  return (
+    <Animated.View style={[tn.wrap, { opacity, transform: [{ translateY }] }]}>
+      <View style={tn.inner}>
+        <View style={tn.iconWrap}>
+          <Ionicons name="trophy" size={18} color={GREEN} />
+        </View>
+        <Text style={tn.text} numberOfLines={2}>{message}</Text>
+        <TouchableOpacity onPress={onHide} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Ionicons name="close" size={18} color="rgba(255,255,255,0.5)" />
+        </TouchableOpacity>
+      </View>
+    </Animated.View>
+  );
+}
+
+const tn = StyleSheet.create({
+  wrap:    { position: 'absolute', bottom: 96, left: 16, right: 16, zIndex: 999 },
+  inner:   { backgroundColor: '#1c1917', borderRadius: 18, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 12, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 14, shadowOffset: { width: 0, height: 4 }, elevation: 14, borderWidth: 1, borderColor: '#14532d' },
+  iconWrap:{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#dcfce7', alignItems: 'center', justifyContent: 'center' },
+  text:    { flex: 1, color: '#ffffff', fontSize: 14, fontWeight: '600', lineHeight: 20 },
+});
+
 // ── Main screen ────────────────────────────────────────────────────────────────
 export default function MilestonesScreen({ navigation }) {
   const insets        = useSafeAreaInsets();
   const { user }      = useAuth();
-  const { goals }     = useUserData();
+  const { goals, profile } = useUserData();
 
   const [createOpen,  setCreateOpen]  = useState(false);
   const [addTarget,   setAddTarget]   = useState(null);
+  const [detailGoal,  setDetailGoal]  = useState(null);
   const [saving,      setSaving]      = useState(false);
+  const [toastMsg,    setToastMsg]    = useState(null);
 
   const milestones = goals.filter(g => g.type === 'milestone');
   const active     = milestones.filter(g => (g.currentAmount ?? 0) <  (g.targetAmount ?? 0));
@@ -515,15 +729,62 @@ export default function MilestonesScreen({ navigation }) {
 
   const handleAddFunds = async (amount) => {
     if (!addTarget || isNaN(amount) || amount <= 0) return;
+
+    const currentBalance = profile?.balance ?? 0;
+    if (amount > currentBalance) {
+      Alert.alert(
+        'Insufficient Balance',
+        `You only have ${fmt(currentBalance)} available in your wallet.`,
+      );
+      return;
+    }
+
     setSaving(true);
     try {
-      const newAmt = Math.min(
-        (addTarget.currentAmount ?? 0) + amount,
-        addTarget.targetAmount,
-      );
-      await updateDoc(doc(db, 'users', user.uid, 'goals', addTarget.id), {
-        currentAmount: newAmt,
-      });
+      const before       = addTarget.currentAmount ?? 0;
+      const newAmt       = Math.min(before + amount, addTarget.targetAmount);
+      const actualAmount = newAmt - before; // may be less than amount if near goal
+
+      const justCompleted = newAmt >= addTarget.targetAmount;
+
+      await Promise.all([
+        // Update milestone progress
+        updateDoc(doc(db, 'users', user.uid, 'goals', addTarget.id), {
+          currentAmount: newAmt,
+        }),
+        // Deduct from wallet balance
+        updateDoc(doc(db, 'users', user.uid), {
+          balance:        increment(-actualAmount),
+          totalAvailable: increment(-actualAmount),
+        }),
+        // Record deduction transaction
+        addDoc(collection(db, 'users', user.uid, 'transactions'), {
+          title:     `Milestone: ${addTarget.title}`,
+          amount:    -actualAmount,
+          type:      'milestone_manual',
+          category:  'Savings',
+          createdAt: serverTimestamp(),
+        }),
+      ]);
+
+      // Milestone just hit its target — release the full saved amount back to wallet
+      if (justCompleted) {
+        await Promise.all([
+          updateDoc(doc(db, 'users', user.uid), {
+            balance:        increment(newAmt),
+            totalAvailable: increment(newAmt),
+          }),
+          addDoc(collection(db, 'users', user.uid, 'transactions'), {
+            title:     `Milestone Achieved: ${addTarget.title}`,
+            amount:    newAmt,
+            type:      'milestone_complete',
+            category:  'Savings',
+            createdAt: serverTimestamp(),
+          }),
+        ]);
+        setToastMsg(`"${addTarget.title}" completed! ${fmt(newAmt)} added to your balance.`);
+      }
+
       setAddTarget(null);
     } catch {
       Alert.alert('Error', 'Could not update milestone.');
@@ -625,6 +886,7 @@ export default function MilestonesScreen({ navigation }) {
                 goal={g}
                 onAdd={setAddTarget}
                 onDelete={handleDelete}
+                onOpen={setDetailGoal}
               />
             ))
           )}
@@ -661,6 +923,15 @@ export default function MilestonesScreen({ navigation }) {
         onConfirm={handleAddFunds}
         saving={saving}
       />
+
+      <MilestoneDetailSheet
+        visible={!!detailGoal}
+        goal={detailGoal}
+        onClose={() => setDetailGoal(null)}
+        onAdd={setAddTarget}
+      />
+
+      <CompletionToast message={toastMsg} onHide={() => setToastMsg(null)} />
     </View>
   );
 }

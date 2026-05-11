@@ -61,16 +61,20 @@ function avatarColor(str = '') {
   return AVATAR_COLORS[(str.charCodeAt(0) ?? 0) % AVATAR_COLORS.length];
 }
 
-async function getOrCreateConversation(myUid, myName, otherUid, otherName) {
+async function getOrCreateConversation(myUid, myName, myBg, otherUid, otherName, otherBg) {
   const q    = query(collection(db, 'conversations'), where('participants', 'array-contains', myUid));
   const snap = await getDocs(q);
   const existing = snap.docs.find(d => (d.data().participants ?? []).includes(otherUid));
   if (existing) return existing.id;
   const ref = await addDoc(collection(db, 'conversations'), {
-    participants:  [myUid, otherUid],
-    names:         { [myUid]: myName, [otherUid]: otherName },
+    participants: [myUid, otherUid],
+    participantMeta: {
+      [myUid]:   { name: myName,   avatarBg: myBg,   isExpert: false, online: false },
+      [otherUid]: { name: otherName, avatarBg: otherBg, isExpert: false, online: false },
+    },
     lastMessage:   '',
-    lastAt:        serverTimestamp(),
+    lastMessageAt: serverTimestamp(),
+    unread:        { [myUid]: 0, [otherUid]: 0 },
     createdAt:     serverTimestamp(),
   });
   return ref.id;
@@ -100,13 +104,17 @@ function JobCard({ job, currentUid, currentName, navigation, onApply, onWithdraw
 
   const handleMessage = async () => {
     try {
-      const convId = await getOrCreateConversation(
-        currentUid, currentName, job.postedBy, job.postedByName ?? 'User'
+      const myBg    = avatarColor(currentUid);
+      const otherBg = avatarColor(job.postedBy);
+      const convId  = await getOrCreateConversation(
+        currentUid, currentName, myBg,
+        job.postedBy, job.postedByName ?? 'User', otherBg,
       );
       navigation.navigate('Conversation', {
         conversationId: convId,
         otherName:      job.postedByName ?? 'User',
         otherUid:       job.postedBy,
+        avatarBg:       otherBg,
       });
     } catch {
       Alert.alert('Error', 'Could not open conversation.');

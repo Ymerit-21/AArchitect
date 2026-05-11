@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users can read and write their own document
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      // Transactions, momoTransactions, etc. — owner only
+      match /{subcollection}/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // Notifications — owner can read/update/delete; any auth user can create (e.g. client booking expert)
+      match /notifications/{notifId} {
+        allow read, update, delete: if request.auth != null && request.auth.uid == userId;
+        allow create: if request.auth != null;
+      }
+    }
+
+    // Experts — anyone authenticated can read; expert owns their profile;
+    // any authenticated user may update only rating/reviewCount (post-job review)
+    match /experts/{expertId} {
+      allow read: if request.auth != null;
+      allow create, delete: if request.auth != null && request.auth.uid == expertId;
+      allow update: if request.auth != null && (
+        request.auth.uid == expertId ||
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['rating', 'reviewCount'])
+      );
+
+      match /reviews/{reviewId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null;
+      }
+    }
+
+    // Jobs — authenticated users can read/create; owner can update/delete
+    match /jobs/{jobId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null && request.auth.uid == resource.data.clientId;
+    }
+
+    // Conversations — any participant can read/write; anyone auth can create
+    match /conversations/{conversationId} {
+      allow create: if request.auth != null;
+      allow read, update, delete: if request.auth != null &&
+        request.auth.uid in resource.data.participants;
+
+      match /messages/{messageId} {
+        allow read, write: if request.auth != null;
+      }
+    }
+  }
+}

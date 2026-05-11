@@ -7,6 +7,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 // ── Cloudinary config ─────────────────────────────────────────────────────────
 const CLOUDINARY_CLOUD  = 'dfklr2rwy';
 const CLOUDINARY_PRESET = 'architect_upload';
@@ -182,7 +183,11 @@ export default function BecomeExpertScreen({ navigation }) {
   const [bio,        setBio]        = useState('');
 
   // Location
-  const [location, setLocation] = useState('');
+  const [locationLabel,  setLocationLabel]  = useState('');
+  const [locationCoords, setLocationCoords] = useState(null); // { latitude, longitude }
+  const [locating,       setLocating]       = useState(false);
+  const [geocoding,      setGeocoding]      = useState(false);
+  const [locTyped,       setLocTyped]       = useState('');
 
   // Skills
   const [skills, setSkills] = useState([]);
@@ -241,12 +246,56 @@ export default function BecomeExpertScreen({ navigation }) {
     setError('');
   };
 
+  // ── Location helpers ─────────────────────────────────────────────────────
+  const useGpsLocation = async () => {
+    setLocating(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission denied', 'Location access is needed to detect your position.');
+        return;
+      }
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const { latitude, longitude } = pos.coords;
+      const [place] = await Location.reverseGeocodeAsync({ latitude, longitude });
+      const label = place
+        ? [[place.district ?? place.subregion, place.city ?? place.region].filter(Boolean).join(', ')]
+            .filter(Boolean)[0] ?? `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
+        : `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+      setLocationCoords({ latitude, longitude });
+      setLocationLabel(label);
+      setLocTyped(label);
+      setError('');
+    } catch {
+      Alert.alert('Error', 'Could not fetch your location.');
+    } finally {
+      setLocating(false);
+    }
+  };
+
+  const searchTypedLocation = async () => {
+    if (!locTyped.trim()) return;
+    setGeocoding(true);
+    try {
+      const results = await Location.geocodeAsync(locTyped.trim());
+      if (!results.length) { setError('Location not found. Try a more specific address.'); return; }
+      const { latitude, longitude } = results[0];
+      setLocationCoords({ latitude, longitude });
+      setLocationLabel(locTyped.trim());
+      setError('');
+    } catch {
+      setError('Could not find that location. Please try again.');
+    } finally {
+      setGeocoding(false);
+    }
+  };
+
   // ── Submit ───────────────────────────────────────────────────────────────
   const handleSubmit = async () => {
     setError('');
     if (!profession.trim())        return setError('Profession is required.');
     if (!price)                    return setError('Please select a starting price.');
-    if (!location.trim())          return setError('Location is required.');
+    if (!locationCoords)           return setError('Please set your location (use GPS or search an address).');
     if (!isValidGhanaCard(ghanaCard))
                                    return setError('Enter a valid Ghana Card number (GHA-000000000-0).');
     if (!ghanaCardFront)           return setError('Ghana Card front photo is required.');
@@ -276,7 +325,7 @@ export default function BecomeExpertScreen({ navigation }) {
         profession:        profession.trim(),
         from:              price,
         bio:               bio.trim(),
-        location:          location.trim(),
+        location:          { label: locationLabel, ...locationCoords },
         skills,
         ghanaCard,
         ghanaCardFrontUrl: frontUrl,
@@ -367,12 +416,70 @@ export default function BecomeExpertScreen({ navigation }) {
 
           {/* ── Location ────────────────────────────────────────────────── */}
           <Section icon="location-outline" title="Location">
-            <Field
-              label="Your location" required
-              placeholder="e.g. East Legon, Accra"
-              value={location}
-              onChange={t => { setLocation(t); setError(''); }}
-            />
+            <View style={st.fieldWrap}>
+              <Text style={st.label}>Your service area</Text>
+              <Text style={st.hint}>This pins you on the Marketplace map so clients can find you nearby</Text>
+
+              {/* GPS button */}
+              <TouchableOpacity
+                style={[st.gpsBtn, locating && { opacity: 0.7 }]}
+                onPress={useGpsLocation}
+                disabled={locating}
+                activeOpacity={0.85}
+              >
+                <View style={st.gpsIconWrap}>
+                  {locating
+                    ? <ActivityIndicator size="small" color="#ffffff" />
+                    : <Ionicons name="navigate" size={18} color="#ffffff" />}
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={st.gpsBtnTxt}>Use my current location</Text>
+                  <Text style={st.gpsBtnSub}>Auto-detect via GPS</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.4)" />
+              </TouchableOpacity>
+
+              {/* OR divider */}
+              <View style={st.orRow}>
+                <View style={st.orLine} />
+                <Text style={st.orTxt}>or type an address</Text>
+                <View style={st.orLine} />
+              </View>
+
+              {/* Manual address input + Search */}
+              <View style={st.locSearchRow}>
+                <TextInput
+                  style={[st.input, st.locInput, locationCoords && st.inputValid]}
+                  placeholder="e.g. Osu, Accra"
+                  placeholderTextColor="rgba(255,255,255,0.25)"
+                  value={locTyped}
+                  onChangeText={t => { setLocTyped(t); setError(''); }}
+                  returnKeyType="search"
+                  onSubmitEditing={searchTypedLocation}
+                />
+                <TouchableOpacity
+                  style={[st.locSearchBtn, (!locTyped.trim() || geocoding) && { opacity: 0.45 }]}
+                  onPress={searchTypedLocation}
+                  disabled={!locTyped.trim() || geocoding}
+                  activeOpacity={0.85}
+                >
+                  {geocoding
+                    ? <ActivityIndicator size="small" color="#ffffff" />
+                    : <Ionicons name="search" size={18} color="#ffffff" />}
+                </TouchableOpacity>
+              </View>
+
+              {/* Confirmed location pill */}
+              {locationCoords && (
+                <View style={st.locConfirmed}>
+                  <Ionicons name="checkmark-circle" size={15} color="#22c55e" />
+                  <Text style={st.locConfirmedTxt} numberOfLines={1}>{locationLabel}</Text>
+                  <TouchableOpacity onPress={() => { setLocationCoords(null); setLocationLabel(''); setLocTyped(''); }}>
+                    <Ionicons name="close-circle" size={16} color="rgba(255,255,255,0.35)" />
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
           </Section>
 
           {/* ── Skills ──────────────────────────────────────────────────── */}
@@ -552,4 +659,18 @@ const st = StyleSheet.create({
   // Submit
   btn:    { backgroundColor: '#ffffff', borderRadius: 50, height: 56, alignItems: 'center', justifyContent: 'center' },
   btnTxt: { color: DARK, fontSize: 16, fontWeight: '700' },
+
+  // Location picker
+  gpsBtn:      { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#e63946', borderRadius: 14, padding: 14, marginBottom: 4 },
+  gpsIconWrap: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
+  gpsBtnTxt:   { color: '#ffffff', fontSize: 14, fontWeight: '700' },
+  gpsBtnSub:   { color: 'rgba(255,255,255,0.65)', fontSize: 12, marginTop: 1 },
+  orRow:       { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 12 },
+  orLine:      { flex: 1, height: 1, backgroundColor: 'rgba(255,255,255,0.08)' },
+  orTxt:       { color: 'rgba(255,255,255,0.35)', fontSize: 12, fontWeight: '600' },
+  locSearchRow:   { flexDirection: 'row', gap: 8 },
+  locInput:       { flex: 1, marginBottom: 0 },
+  locSearchBtn:   { width: 48, height: 48, borderRadius: 12, backgroundColor: '#1c1917', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', alignItems: 'center', justifyContent: 'center' },
+  locConfirmed:   { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: 'rgba(34,197,94,0.1)', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, marginTop: 10, borderWidth: 1, borderColor: 'rgba(34,197,94,0.25)' },
+  locConfirmedTxt:{ flex: 1, color: '#22c55e', fontSize: 13, fontWeight: '600' },
 });

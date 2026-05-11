@@ -11,11 +11,15 @@ import * as DocumentPicker from 'expo-document-picker';
 import { Audio } from 'expo-av';
 import {
   collection, query, orderBy, onSnapshot,
-  addDoc, serverTimestamp, doc, updateDoc, getDoc,
+  addDoc, serverTimestamp, doc, updateDoc, setDoc, getDoc, increment,
 } from 'firebase/firestore';
-import { ref as sRef, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../firebase';
+import { db } from '../firebase';
+
+// ── Cloudinary config ─────────────────────────────────────────────────────────
+const CLOUDINARY_CLOUD_NAME    = 'dfklr2rwy';
+const CLOUDINARY_UPLOAD_PRESET = 'chatii';
 import { useAuth } from '../context/AuthContext';
+import { useUserData } from '../context/UserDataContext';
 
 const BG = '#f0ede6';
 
@@ -100,8 +104,10 @@ export default function ConversationScreen({ navigation, route }) {
   const otherUid       = params.otherUid;
   const avatarBg       = params.avatarBg ?? avatarColor(otherUid ?? '');
 
-  const insets   = useSafeAreaInsets();
-  const { user } = useAuth();
+  const insets      = useSafeAreaInsets();
+  const { user }    = useAuth();
+  const { profile } = useUserData();
+  const myName      = profile?.displayName ?? user?.displayName ?? 'User';
 
   const [messages,    setMessages]    = useState([]);
   const [text,        setText]        = useState('');
@@ -150,22 +156,73 @@ export default function ConversationScreen({ navigation, route }) {
     const unsub = onSnapshot(q, snap => {
       setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 80);
+    }, err => {
+      console.error('Messages listener error:', err.code, err.message);
     });
     return unsub;
   }, [conversationId]);
 
-  // Mark as read
+  // Mark as read — updateDoc correctly expands dot-notation into nested fields.
+  // Falls back to setDoc (full create) when the conversation doc doesn't exist yet.
   useEffect(() => {
-    if (!conversationId || !user) return;
-    updateDoc(doc(db, 'conversations', conversationId), {
+    if (!conversationId || !user || !otherUid) return;
+    const convRef = doc(db, 'conversations', conversationId);
+    const meta = {
+      [`participantMeta.${user.uid}`]: { name: myName, avatarBg: avatarColor(user.uid) },
+      [`participantMeta.${otherUid}`]: { name: otherName, avatarBg },
       [`unread.${user.uid}`]: 0,
-    }).catch(() => {});
-  }, [conversationId, user]);
+      participants: [user.uid, otherUid],
+    };
+    updateDoc(convRef, meta).catch(e => {
+      if (e.code === 'not-found') {
+        setDoc(convRef, {
+          participants:    [user.uid, otherUid],
+          participantMeta: {
+            [user.uid]: { name: myName, avatarBg: avatarColor(user.uid) },
+            [otherUid]: { name: otherName, avatarBg },
+          },
+          unread:          { [user.uid]: 0, [otherUid]: 0 },
+          lastMessage:     '',
+          lastMessageAt:   serverTimestamp(),
+        }).catch(() => {});
+      }
+    });
+  }, [conversationId, user?.uid]);
 
   // Cleanup sound on unmount
   useEffect(() => {
     return () => { soundRef.current?.unloadAsync().catch(() => {}); };
   }, []);
+
+  // ── Start a call ─────────────────────────────────────────────────────────────
+  const handleCall = async (type) => {
+    if (!user || !otherUid) return;
+    try {
+      const callerName      = myName;
+      const callerAvatarBg  = avatarColor(user.uid);
+      const callRef = await addDoc(collection(db, 'calls'), {
+        callerId:      user.uid,
+        callerName,
+        callerAvatarBg,
+        calleeId:      otherUid,
+        calleeName:    otherName,
+        conversationId,
+        type,
+        status:        'ringing',
+        createdAt:     serverTimestamp(),
+      });
+      navigation.navigate('Call', {
+        callId:    callRef.id,
+        isCaller:  true,
+        type,
+        otherName,
+        otherUid,
+        avatarBg,
+      });
+    } catch (e) {
+      Alert.alert('Call failed', 'Could not start call. Please try again.');
+    }
+  };
 
   // Toggle availability
   const toggleAvailable = async () => {
@@ -175,13 +232,26 @@ export default function ConversationScreen({ navigation, route }) {
     try { await updateDoc(doc(db, 'users', user.uid), { available: next }); } catch {}
   };
 
-  // ── Upload helper ────────────────────────────────────────────────────────────
-  const uploadFile = async (uri, path) => {
-    const res     = await fetch(uri);
-    const blob    = await res.blob();
-    const fileRef = sRef(storage, path);
-    await uploadBytes(fileRef, blob);
-    return getDownloadURL(fileRef);
+  // ── Upload helper (Cloudinary) ───────────────────────────────────────────────
+  const uploadFile = async (uri, resourceType = 'image', fileName = 'upload') => {
+    const formData = new FormData();
+    const mimeType = resourceType === 'video' ? 'audio/m4a'
+                   : resourceType === 'raw'   ? 'application/octet-stream'
+                   : 'image/jpeg';
+    formData.append('file', { uri, type: mimeType, name: fileName });
+    formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+    formData.append('folder', 'chat');
+
+    const res = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/${resourceType}/upload`,
+      { method: 'POST', body: formData },
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message ?? 'Upload failed');
+    }
+    const data = await res.json();
+    return data.secure_url;
   };
 
   // ── Generic message sender ───────────────────────────────────────────────────
@@ -192,12 +262,36 @@ export default function ConversationScreen({ navigation, route }) {
       : payload.type === 'image' ? '📷 Photo'
       : payload.type === 'file'  ? `📎 ${payload.fileName}`
       : '🎤 Voice message';
+    // Write the message first — the other user will see it immediately.
     await addDoc(collection(db, 'conversations', conversationId, 'messages'), {
       senderId: user.uid, createdAt: serverTimestamp(), ...payload,
     });
-    await updateDoc(doc(db, 'conversations', conversationId), {
-      lastMessage: preview, lastMessageAt: serverTimestamp(),
-      [`unread.${otherUid}`]: 1, [`unread.${user.uid}`]: 0,
+    // Update conversation metadata. updateDoc expands dot-notation correctly.
+    // Falls back to setDoc when the doc doesn't exist yet (new conversation).
+    const convRef = doc(db, 'conversations', conversationId);
+    updateDoc(convRef, {
+      participants: [user.uid, otherUid],
+      [`participantMeta.${user.uid}`]: { name: myName, avatarBg: avatarColor(user.uid) },
+      [`participantMeta.${otherUid}`]: { name: otherName, avatarBg },
+      lastMessage:    preview,
+      lastMessageAt:  serverTimestamp(),
+      [`unread.${otherUid}`]: increment(1),
+      [`unread.${user.uid}`]: 0,
+    }).catch(e => {
+      if (e.code === 'not-found') {
+        setDoc(convRef, {
+          participants:    [user.uid, otherUid],
+          participantMeta: {
+            [user.uid]: { name: myName, avatarBg: avatarColor(user.uid) },
+            [otherUid]: { name: otherName, avatarBg },
+          },
+          lastMessage:   preview,
+          lastMessageAt: serverTimestamp(),
+          unread:        { [otherUid]: 1, [user.uid]: 0 },
+        }).catch(() => {});
+      } else {
+        console.error('Conv update error:', e.code, e.message);
+      }
     });
   };
 
@@ -208,8 +302,15 @@ export default function ConversationScreen({ navigation, route }) {
     setSending(true);
     setText('');
     setShowEmoji(false);
-    try { await sendMsg({ text: trimmed }); } catch (e) { console.error(e); }
-    finally { setSending(false); }
+    try {
+      await sendMsg({ text: trimmed });
+    } catch (e) {
+      console.error('Send error:', e.code, e.message);
+      Alert.alert('Send failed', `${e.code ?? e.message}`);
+      setText(trimmed); // restore text so the user can retry
+    } finally {
+      setSending(false);
+    }
   };
 
   // ── Camera / Gallery ─────────────────────────────────────────────────────────
@@ -223,7 +324,7 @@ export default function ConversationScreen({ navigation, route }) {
           if (result.canceled) return;
           setUploading(true);
           try {
-            const url = await uploadFile(result.assets[0].uri, `chat/${conversationId}/${Date.now()}.jpg`);
+            const url = await uploadFile(result.assets[0].uri, 'image', `photo_${Date.now()}.jpg`);
             await sendMsg({ type: 'image', imageUrl: url });
           } catch { Alert.alert('Upload failed', 'Could not upload photo.'); }
           finally { setUploading(false); }
@@ -237,7 +338,7 @@ export default function ConversationScreen({ navigation, route }) {
           if (result.canceled) return;
           setUploading(true);
           try {
-            const url = await uploadFile(result.assets[0].uri, `chat/${conversationId}/${Date.now()}.jpg`);
+            const url = await uploadFile(result.assets[0].uri, 'image', `photo_${Date.now()}.jpg`);
             await sendMsg({ type: 'image', imageUrl: url });
           } catch { Alert.alert('Upload failed', 'Could not upload photo.'); }
           finally { setUploading(false); }
@@ -254,7 +355,7 @@ export default function ConversationScreen({ navigation, route }) {
       if (result.canceled) return;
       const asset = result.assets[0];
       setUploading(true);
-      const url = await uploadFile(asset.uri, `chat/${conversationId}/${Date.now()}_${asset.name}`);
+      const url = await uploadFile(asset.uri, 'raw', asset.name ?? `file_${Date.now()}`);
       await sendMsg({ type: 'file', fileUrl: url, fileName: asset.name, fileSize: asset.size });
     } catch { Alert.alert('Error', 'Could not attach file.'); }
     finally { setUploading(false); }
@@ -274,7 +375,7 @@ export default function ConversationScreen({ navigation, route }) {
         const dur = recDuration;
         setRecDuration(0);
         setUploading(true);
-        const url = await uploadFile(uri, `chat/${conversationId}/${Date.now()}.m4a`);
+        const url = await uploadFile(uri, 'video', `voice_${Date.now()}.m4a`);
         await sendMsg({ type: 'audio', audioUrl: url, duration: dur });
       } catch { Alert.alert('Error', 'Could not send voice message.'); }
       finally { setUploading(false); }
@@ -448,13 +549,13 @@ export default function ConversationScreen({ navigation, route }) {
 
         <TouchableOpacity
           style={cs.iconBtn}
-          onPress={() => navigation.navigate('Call', { conversationId, otherName, otherUid, avatarBg, type: 'video' })}
+          onPress={() => handleCall('video')}
         >
           <Ionicons name="videocam-outline" size={22} color="#111110" />
         </TouchableOpacity>
         <TouchableOpacity
           style={cs.iconBtn}
-          onPress={() => navigation.navigate('Call', { conversationId, otherName, otherUid, avatarBg, type: 'voice' })}
+          onPress={() => handleCall('voice')}
         >
           <Ionicons name="call-outline" size={20} color="#111110" />
         </TouchableOpacity>

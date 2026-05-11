@@ -1,23 +1,26 @@
-import { useEffect } from 'react';
+import { useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, StatusBar,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { collection, doc, updateDoc, writeBatch } from 'firebase/firestore';
+import { doc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { useUserData } from '../context/UserDataContext';
+import RatingModal from '../components/RatingModal';
 
 const BG   = '#f0ede6';
 const DARK = '#111110';
 const RED  = '#e63946';
 
 const TYPE_META = {
-  job_application: { icon: 'briefcase-outline',   color: '#3b82f6', bg: '#eff6ff' },
-  payment:         { icon: 'cash-outline',          color: '#10b981', bg: '#f0fdf4' },
-  hire:            { icon: 'person-add-outline',    color: '#a855f7', bg: '#faf5ff' },
-  default:         { icon: 'notifications-outline', color: '#9ca3af', bg: '#f3f4f6' },
+  booking:         { icon: 'calendar-outline',    color: '#f59e0b', bg: '#fffbeb', label: 'Booking' },
+  job_application: { icon: 'briefcase-outline',    color: '#3b82f6', bg: '#eff6ff', label: 'Job'     },
+  payment:         { icon: 'cash-outline',          color: '#10b981', bg: '#f0fdf4', label: 'Payment' },
+  hire:            { icon: 'person-add-outline',    color: '#a855f7', bg: '#faf5ff', label: 'Hire'    },
+  review_request:  { icon: 'star-outline',          color: '#f59e0b', bg: '#fffbeb', label: 'Review'  },
+  default:         { icon: 'notifications-outline', color: '#9ca3af', bg: '#f3f4f6', label: ''        },
 };
 
 function timeAgo(ts) {
@@ -30,13 +33,16 @@ function timeAgo(ts) {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-function NotifRow({ notif, onRead }) {
-  const meta = TYPE_META[notif.type] ?? TYPE_META.default;
+// ── Notification row ───────────────────────────────────────────────────────────
+function NotifRow({ notif, onPress }) {
+  const meta  = TYPE_META[notif.type] ?? TYPE_META.default;
+  const title = notif.title ?? notif.message ?? 'Notification';
+  const body  = notif.body ?? '';
 
   return (
     <TouchableOpacity
       style={[nr.row, !notif.read && nr.rowUnread]}
-      onPress={() => !notif.read && onRead(notif.id)}
+      onPress={() => onPress(notif)}
       activeOpacity={0.75}
     >
       <View style={[nr.iconWrap, { backgroundColor: meta.bg }]}>
@@ -44,11 +50,20 @@ function NotifRow({ notif, onRead }) {
       </View>
 
       <View style={{ flex: 1 }}>
-        <Text style={nr.message}>{notif.message}</Text>
+        {!!meta.label && (
+          <Text style={[nr.typeTag, { color: meta.color }]}>{meta.label}</Text>
+        )}
+        <Text style={nr.title} numberOfLines={1}>{title}</Text>
+        {!!body && <Text style={nr.body} numberOfLines={2}>{body}</Text>}
         <Text style={nr.time}>{timeAgo(notif.createdAt)}</Text>
       </View>
 
-      {!notif.read && <View style={nr.dot} />}
+      <View style={nr.right}>
+        {!notif.read && <View style={nr.dot} />}
+        {(notif.type === 'booking' || notif.type === 'review_request') && (
+          <Ionicons name="chevron-forward" size={14} color="#d1d5db" />
+        )}
+      </View>
     </TouchableOpacity>
   );
 }
@@ -56,27 +71,40 @@ function NotifRow({ notif, onRead }) {
 const nr = StyleSheet.create({
   row:       { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
   rowUnread: { backgroundColor: '#fef9f9' },
-  iconWrap:  { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
-  message:   { color: DARK, fontSize: 14, fontWeight: '600', lineHeight: 20, marginBottom: 3 },
-  time:      { color: '#9ca3af', fontSize: 12 },
+  iconWrap:  { width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  typeTag:   { fontSize: 10, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 2 },
+  title:     { color: DARK, fontSize: 14, fontWeight: '700', marginBottom: 2 },
+  body:      { color: '#6b7280', fontSize: 13, lineHeight: 18, marginBottom: 3 },
+  time:      { color: '#9ca3af', fontSize: 11 },
+  right:     { alignItems: 'center', gap: 4 },
   dot:       { width: 8, height: 8, borderRadius: 4, backgroundColor: RED },
 });
 
+// ── Main screen ────────────────────────────────────────────────────────────────
 export default function NotificationsScreen({ navigation }) {
-  const insets              = useSafeAreaInsets();
-  const { user }            = useAuth();
+  const insets = useSafeAreaInsets();
+  const { user }                       = useAuth();
   const { notifications, unreadCount } = useUserData();
 
-  const markRead = async (notifId) => {
-    try {
-      await updateDoc(doc(db, 'users', user.uid, 'notifications', notifId), { read: true });
-    } catch {}
+  const [ratingNotif, setRatingNotif] = useState(null);
+
+  const openNotif = async (notif) => {
+    if (notif.type === 'booking') {
+      navigation.navigate('BookingDetail', { notif });
+    } else if (notif.type === 'review_request') {
+      setRatingNotif(notif);
+    }
+    if (!notif.read && user) {
+      try {
+        await updateDoc(doc(db, 'users', user.uid, 'notifications', notif.id), { read: true });
+      } catch {}
+    }
   };
 
   const markAllRead = async () => {
     if (unreadCount === 0) return;
     try {
-      const batch   = writeBatch(db);
+      const batch = writeBatch(db);
       notifications
         .filter(n => !n.read)
         .forEach(n => batch.update(doc(db, 'users', user.uid, 'notifications', n.id), { read: true }));
@@ -103,11 +131,13 @@ export default function NotificationsScreen({ navigation }) {
         )}
       </View>
 
-      {/* Unread badge */}
+      {/* Unread banner */}
       {unreadCount > 0 && (
         <View style={st.unreadBanner}>
           <View style={st.unreadDot} />
-          <Text style={st.unreadTxt}>{unreadCount} unread notification{unreadCount > 1 ? 's' : ''}</Text>
+          <Text style={st.unreadTxt}>
+            {unreadCount} unread notification{unreadCount > 1 ? 's' : ''}
+          </Text>
         </View>
       )}
 
@@ -118,16 +148,25 @@ export default function NotificationsScreen({ navigation }) {
               <Ionicons name="notifications-off-outline" size={40} color="#d1d5db" />
             </View>
             <Text style={st.emptyTitle}>No notifications yet</Text>
-            <Text style={st.emptySub}>You'll be notified when someone applies to your job or sends you a payment</Text>
+            <Text style={st.emptySub}>
+              You'll be notified when someone books you or sends a payment
+            </Text>
           </View>
         ) : (
           <View style={st.list}>
             {notifications.map(n => (
-              <NotifRow key={n.id} notif={n} onRead={markRead} />
+              <NotifRow key={n.id} notif={n} onPress={openNotif} />
             ))}
           </View>
         )}
       </ScrollView>
+
+      {/* Rating popup — slides up when a review_request is tapped */}
+      <RatingModal
+        visible={!!ratingNotif}
+        notif={ratingNotif}
+        onClose={() => setRatingNotif(null)}
+      />
     </View>
   );
 }

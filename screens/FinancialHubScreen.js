@@ -18,16 +18,28 @@ const PURPLE  = '#6366f1';
 const AMBER   = '#f59e0b';
 const PINK    = '#ec4899';
 
-const CAT_COLORS = {
-  Food:       '#e63946',
-  Transport:  '#3b82f6',
-  Tools:      '#10b981',
-  Other:      '#eab308',
-  Others:     '#eab308',
-  Shopping:   '#a855f7',
-  Health:     '#10b981',
-  Bills:      '#ec4899',
+// Case-insensitive color map — keys are lowercase
+const CAT_COLOR_MAP = {
+  food:       '#3b82f6',  // Blue
+  transport:  '#10b981',  // Green
+  other:      '#f59e0b',  // Amber
+  others:     '#f59e0b',  // Amber
+  shopping:   '#a855f7',  // Purple
+  health:     '#6366f1',  // Indigo
+  bills:      '#ec4899',  // Pink
+  tools:      '#14b8a6',  // Teal
+  education:  '#f97316',  // Orange
+  utilities:  '#06b6d4',  // Cyan
+  salary:     '#22c55e',  // Green
+  groceries:  '#3b82f6',  // Blue
 };
+
+// Auto-assigned palette for any category not in the map above
+const EXTRA_PALETTE = ['#8b5cf6','#f97316','#ec4899','#06b6d4','#84cc16','#e11d48','#0ea5e9'];
+
+function getCatColor(name, fallbackIndex) {
+  return CAT_COLOR_MAP[name.toLowerCase()] ?? EXTRA_PALETTE[fallbackIndex % EXTRA_PALETTE.length];
+}
 
 function fmt(n) { return `¢${Number(n ?? 0).toFixed(2)}`; }
 function fmtShort(n) { return `¢${Number(n ?? 0).toFixed(0)}`; }
@@ -110,30 +122,35 @@ function slicePath(cx, cy, r, startAngle, endAngle) {
 
 // ── Spending pie chart ────────────────────────────────────────────────────────
 function SpendingPieChart({ categories, total }) {
-  const SIZE   = 200;
-  const cx     = SIZE / 2;
-  const cy     = SIZE / 2;
-  const R      = 86;
-  const INNER  = 50;
+  const SIZE  = 200;
+  const cx    = SIZE / 2;
+  const cy    = SIZE / 2;
+  const R     = 86;
+  const INNER = 50;
 
+  // Assign colors upfront so chart segments and legend rows share the same color
+  let unknownIdx = 0;
   let angle = 0;
   const slices = categories.map(([cat, amount]) => {
-    const sweep = total > 0 ? (amount / total) * 360 : 0;
-    const start = angle;
+    const isKnown = !!CAT_COLOR_MAP[cat.toLowerCase()];
+    const color   = isKnown ? CAT_COLOR_MAP[cat.toLowerCase()] : EXTRA_PALETTE[(unknownIdx++) % EXTRA_PALETTE.length];
+    const sweep   = total > 0 ? (amount / total) * 360 : 0;
+    const start   = angle;
     angle += sweep;
-    return { cat, amount, start, end: angle };
+    return { cat, amount, color, start, end: angle };
   });
 
   return (
     <View>
-      <View style={{ alignItems: 'center', marginBottom: 18 }}>
+      {/* Donut chart */}
+      <View style={{ alignItems: 'center', marginBottom: 20 }}>
         <View style={{ width: SIZE, height: SIZE }}>
           <Svg width={SIZE} height={SIZE}>
-            {slices.map(({ cat, start, end }) => (
+            {slices.map(({ cat, color, start, end }) => (
               <Path
                 key={cat}
                 d={slicePath(cx, cy, R, start, end)}
-                fill={CAT_COLORS[cat] ?? '#9ca3af'}
+                fill={color}
                 stroke="#ffffff"
                 strokeWidth={3}
               />
@@ -147,14 +164,18 @@ function SpendingPieChart({ categories, total }) {
         </View>
       </View>
 
-      {categories.map(([cat, amount]) => {
-        const color = CAT_COLORS[cat] ?? '#9ca3af';
+      {/* Legend rows */}
+      {slices.map(({ cat, amount, color }) => {
+        const pct = total > 0 ? Math.round((amount / total) * 100) : 0;
         return (
-          <View key={cat} style={[sp.catRow, { backgroundColor: `${color}18`, borderLeftColor: color }]}>
+          <View
+            key={cat}
+            style={[sp.catRow, { backgroundColor: `${color}14`, borderLeftColor: color }]}
+          >
             <View style={[sp.dot, { backgroundColor: color }]} />
-            <Text style={sp.catName}>{cat}</Text>
+            <Text style={sp.catName}>{cat.charAt(0).toUpperCase() + cat.slice(1)}</Text>
             <View style={{ flex: 1 }} />
-            <Text style={[sp.catPct, { color }]}>{total > 0 ? Math.round((amount / total) * 100) : 0}%</Text>
+            <Text style={sp.catPct}>{pct}%</Text>
             <Text style={[sp.catAmt, { color }]}>{fmtShort(amount)}</Text>
           </View>
         );
@@ -167,11 +188,11 @@ const sp = StyleSheet.create({
   centerOverlay: { position: 'absolute', width: 200, height: 200, alignItems: 'center', justifyContent: 'center' },
   centerLabel:   { color: '#9ca3af', fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
   centerAmt:     { color: '#111110', fontSize: 20, fontWeight: '800', marginTop: 2 },
-  catRow:  { flexDirection: 'row', alignItems: 'center', marginBottom: 8, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, borderLeftWidth: 4 },
-  dot:     { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
-  catName: { color: '#374151', fontSize: 13, fontWeight: '500', minWidth: 80 },
-  catPct:  { color: '#9ca3af', fontSize: 12, fontWeight: '600', marginRight: 10 },
-  catAmt:  { color: '#111110', fontSize: 13, fontWeight: '700', minWidth: 36, textAlign: 'right' },
+  catRow:  { flexDirection: 'row', alignItems: 'center', marginBottom: 8, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 11, borderLeftWidth: 4 },
+  dot:     { width: 9, height: 9, borderRadius: 5, marginRight: 10 },
+  catName: { color: '#374151', fontSize: 13, fontWeight: '600' },
+  catPct:  { color: '#9ca3af', fontSize: 12, fontWeight: '600', marginRight: 12 },
+  catAmt:  { fontSize: 13, fontWeight: '800', minWidth: 36, textAlign: 'right' },
 });
 
 // ── Milestone card ────────────────────────────────────────────────────────────
@@ -297,14 +318,14 @@ export default function FinancialHubScreen({ navigation }) {
   // ── Spending distribution ──────────────────────────────────────────────────
   const catMap = {};
   transactions.filter(t => t.amount < 0).forEach(t => {
-    const cat = t.category ?? 'Other';
-    catMap[cat] = (catMap[cat] ?? 0) + Math.abs(t.amount);
+    const key = (t.category ?? 'other').toLowerCase();
+    catMap[key] = (catMap[key] ?? 0) + Math.abs(t.amount);
   });
   const categories = Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
   const catTotal   = categories.reduce((s, [, v]) => s + v, 0);
 
   // ── Goals split ────────────────────────────────────────────────────────────
-  const milestones = goals.filter(g => g.type === 'milestone');
+  const milestones = goals.filter(g => g.type === 'milestone' && (g.currentAmount ?? 0) < (g.targetAmount ?? 0));
   const budgets    = goals.filter(g => g.type === 'budget');
 
   const miniAnims = useRef([0.3, 0.55, 0.9, 0.65, 0.45, 0.7, 1].map(v =>

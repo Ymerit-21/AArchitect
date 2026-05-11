@@ -2,7 +2,7 @@
 // Wraps the app in AuthProvider and switches between auth and app navigators
 // depending on whether a user is signed in.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import {
   StyleSheet, Text, View, SafeAreaView,
@@ -14,8 +14,11 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useFonts, KodeMono_700Bold } from '@expo-google-fonts/kode-mono';
 
 import { AuthProvider, useAuth } from './context/AuthContext';
-import { UserDataProvider } from './context/UserDataContext';
+import { UserDataProvider, useUserData } from './context/UserDataContext';
 import AnimatedButton from './components/AnimatedButton';
+import InAppMessageToast from './components/InAppMessageToast';
+import IncomingCallOverlay from './components/IncomingCallOverlay';
+import RatingModal from './components/RatingModal';
 import SignInScreen from './screens/SignInScreen';
 import CreateAccountScreen from './screens/CreateAccountScreen';
 import ForgotPasswordScreen from './screens/ForgotPasswordScreen';
@@ -39,6 +42,11 @@ import NotificationsScreen    from './screens/NotificationsScreen';
 import AdminHomeScreen    from './screens/admin/AdminHomeScreen';
 import AdminExpertsScreen from './screens/admin/AdminExpertsScreen';
 import AdminUsersScreen   from './screens/admin/AdminUsersScreen';
+import CallScreen         from './screens/CallScreen';
+import HireScreen             from './screens/HireScreen';
+import BookingDetailScreen    from './screens/BookingDetailScreen';
+import MobileMoneyScreen      from './screens/MobileMoneyScreen';
+import RatingScreen           from './screens/RatingScreen';
 
 const AuthStack = createNativeStackNavigator();
 const AppStack  = createNativeStackNavigator();
@@ -179,35 +187,80 @@ function AppNavigator() {
       <AppStack.Screen name="AdminHome"     component={AdminHomeScreen} />
       <AppStack.Screen name="AdminExperts"  component={AdminExpertsScreen} />
       <AppStack.Screen name="AdminUsers"    component={AdminUsersScreen} />
+      <AppStack.Screen name="Call"          component={CallScreen} />
+      <AppStack.Screen name="Hire"           component={HireScreen} />
+      <AppStack.Screen name="BookingDetail" component={BookingDetailScreen} />
+      <AppStack.Screen name="MobileMoney"    component={MobileMoneyScreen} />
+      <AppStack.Screen name="Rating"         component={RatingScreen} />
     </AppStack.Navigator>
   );
 }
 
-// Reads auth state and switches stacks automatically.
-// user === undefined → still loading (show blank screen)
-// user === null      → signed out → AuthNavigator
-// user === object    → signed in  → AppNavigator
-function RootNavigator() {
+// Inner content — switches between auth and app stacks.
+function RootNavContent() {
   const { user } = useAuth();
+  if (user === undefined) return <View style={styles.loadingBg} />;
+  return user ? <AppNavigator /> : <AuthNavigator />;
+}
 
-  if (user === undefined) {
-    return <View style={styles.loadingBg} />;
-  }
+// Auto-shows rating modal when the client has a pending review_request notification.
+// Mounted at the App root so it appears over ANY screen.
+function PendingReviewModal() {
+  const { pendingReview } = useUserData();
+  const [activeNotif, setActiveNotif] = useState(null);
+  const shownIds  = useRef(new Set());
+  const readyRef  = useRef(false);   // wait for nav to settle before popping modal
+
+  // Short delay so navigation finishes mounting before the modal appears
+  useEffect(() => {
+    const t = setTimeout(() => { readyRef.current = true; }, 800);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    if (!pendingReview) return;
+    if (shownIds.current.has(pendingReview.id)) return;
+
+    // If app just loaded, wait for the ready delay; otherwise show immediately
+    const show = () => {
+      shownIds.current.add(pendingReview.id);
+      setActiveNotif({ ...pendingReview });
+    };
+
+    if (readyRef.current) {
+      show();
+    } else {
+      const t = setTimeout(show, 900);
+      return () => clearTimeout(t);
+    }
+  }, [pendingReview?.id]);
 
   return (
-    <NavigationContainer>
-      {user ? <AppNavigator /> : <AuthNavigator />}
-    </NavigationContainer>
+    <RatingModal
+      visible={!!activeNotif}
+      notif={activeNotif}
+      onClose={() => setActiveNotif(null)}
+    />
   );
 }
 
 export default function App() {
+  const navRef = useRef(null);
+
   return (
     <SafeAreaProvider>
       <View style={[styles.appRoot, Platform.OS === 'web' && styles.appRootWeb]}>
         <AuthProvider>
           <UserDataProvider>
-            <RootNavigator />
+            <NavigationContainer ref={navRef}>
+              <RootNavContent />
+            </NavigationContainer>
+            {/* Floating WhatsApp-style message toast */}
+            <InAppMessageToast navRef={navRef} />
+            {/* Incoming call sheet */}
+            <IncomingCallOverlay navRef={navRef} />
+            {/* Auto rating modal after job completion */}
+            <PendingReviewModal />
           </UserDataProvider>
         </AuthProvider>
       </View>

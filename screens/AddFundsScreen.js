@@ -179,7 +179,7 @@ export default function AddFundsScreen({ navigation }) {
                 <Text style={[styles.panelLabel, { marginTop: 16 }]}>Account Name</Text>
                 <TextInput
                   style={[styles.panelInput, { color: '#9ca3af' }]}
-                  placeholder="Auto-filled after verification"
+                  placeholder="Verified on next screen"
                   placeholderTextColor="#9ca3af"
                   editable={false}
                 />
@@ -293,10 +293,20 @@ export default function AddFundsScreen({ navigation }) {
               label="Proceed"
               style={[styles.proceedBtn, !canProceed && styles.proceedBtnDisabled]}
               textStyle={styles.proceedText}
-              onPress={() => canProceed && navigation.navigate('Pin', {
-                amount: parseFloat(amount),
-                method: methodLabel,
-              })}
+              onPress={() => {
+                if (!canProceed) return;
+                if (method === 'mobile' && network === 'MTN') {
+                  navigation.navigate('MobileMoney', {
+                    amount: parseFloat(amount),
+                    prefillPhone: phone,
+                  });
+                } else {
+                  navigation.navigate('Pin', {
+                    amount: parseFloat(amount),
+                    method: methodLabel,
+                  });
+                }
+              }}
               disabled={!canProceed}
             />
           </Animated.View>

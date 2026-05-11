@@ -6,8 +6,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  collection, query, where, orderBy, onSnapshot,
-  addDoc, serverTimestamp, doc, updateDoc, increment,
+  collection, query, where, onSnapshot,
+  addDoc, serverTimestamp, doc, updateDoc,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
@@ -87,7 +87,9 @@ function ConvoRow({ item, uid, delay, navigation }) {
           otherUid,
         })}
       >
-        <Avatar name={name} bg={bg} online={online} />
+        <View style={{ alignSelf: 'center' }}>
+          <Avatar name={name} bg={bg} online={online} />
+        </View>
         <View style={st.rowMid}>
           <Text style={st.rowName} numberOfLines={1}>{name}</Text>
           <Text style={[st.rowPreview, unread > 0 && st.rowPreviewBold]} numberOfLines={1}>
@@ -95,11 +97,15 @@ function ConvoRow({ item, uid, delay, navigation }) {
           </Text>
         </View>
         <View style={st.rowRight}>
-          <Text style={st.rowTime}>{relativeTime(item.lastMessageAt)}</Text>
-          {unread > 0 && (
+          <Text style={[st.rowTime, unread > 0 && st.rowTimeUnread]}>
+            {relativeTime(item.lastMessageAt ?? item.lastAt)}
+          </Text>
+          {unread > 0 ? (
             <View style={st.badge}>
-              <Text style={st.badgeTxt}>{unread > 9 ? '9+' : unread}</Text>
+              <Text style={st.badgeTxt}>{unread > 99 ? '99+' : unread}</Text>
             </View>
+          ) : (
+            <View style={st.badgePlaceholder} />
           )}
         </View>
       </TouchableOpacity>
@@ -123,15 +129,25 @@ export default function MessagesScreen({ navigation }) {
   // ── Firestore: real-time conversations ──────────────────────────────────────
   useEffect(() => {
     if (!user) return;
+    // No orderBy here — avoids the composite index requirement.
+    // We sort by lastMessageAt (or createdAt fallback) in JS below.
     const q = query(
       collection(db, 'conversations'),
       where('participants', 'array-contains', user.uid),
-      orderBy('lastMessageAt', 'desc'),
     );
     const unsub = onSnapshot(q, snap => {
-      setConvos(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      docs.sort((a, b) => {
+        const ta = (a.lastMessageAt ?? a.lastAt ?? a.createdAt)?.toDate?.()?.getTime() ?? 0;
+        const tb = (b.lastMessageAt ?? b.lastAt ?? b.createdAt)?.toDate?.()?.getTime() ?? 0;
+        return tb - ta;
+      });
+      setConvos(docs);
       setLoading(false);
-    }, () => setLoading(false));
+    }, err => {
+      console.error('Conversations listener error:', err.code, err.message);
+      setLoading(false);
+    });
     return unsub;
   }, [user]);
 
@@ -303,17 +319,19 @@ const st = StyleSheet.create({
   separator:   { height: 1, backgroundColor: 'rgba(0,0,0,0.04)', marginLeft: 78 },
 
   // Row
-  row:            { flexDirection: 'row', alignItems: 'center', backgroundColor: '#ffffff', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 14, gap: 12 },
+  row:            { flexDirection: 'row', alignItems: 'stretch', backgroundColor: '#ffffff', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 14, gap: 12 },
   rowMid:         { flex: 1, gap: 4 },
   rowName:        { color: '#111110', fontSize: 15, fontWeight: '700' },
   rowPreview:     { color: '#9ca3af', fontSize: 13 },
   rowPreviewBold: { color: '#374151', fontWeight: '600' },
-  rowRight:       { alignItems: 'flex-end', gap: 6, minWidth: 60 },
-  rowTime:        { color: '#9ca3af', fontSize: 12 },
+  rowRight:        { alignItems: 'flex-end', justifyContent: 'space-between', gap: 6, minWidth: 56 },
+  rowTime:         { color: '#9ca3af', fontSize: 12, fontWeight: '500' },
+  rowTimeUnread:   { color: '#22c55e', fontWeight: '700' },
 
   // Badge
-  badge:    { minWidth: 22, height: 22, borderRadius: 11, backgroundColor: '#111110', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
-  badgeTxt: { color: '#ffffff', fontSize: 11, fontWeight: '700' },
+  badge:           { minWidth: 24, height: 24, borderRadius: 12, backgroundColor: '#22c55e', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
+  badgeTxt:        { color: '#ffffff', fontSize: 12, fontWeight: '800' },
+  badgePlaceholder:{ height: 24 },
 
   // Avatar
   avatar:    { alignItems: 'center', justifyContent: 'center' },
